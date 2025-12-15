@@ -40,6 +40,19 @@ async function run() {
         app.get('/', (req, res) => {
             res.send('PIIRS Server is running!');
         });
+        app.post('/users', async (req, res) => {
+         const userdata =req.body
+
+         const result = await usersCollection.insertOne(userdata);
+
+
+
+            res.send(result);
+        });
+        app.get('/getusers' ,async (req,res) => {
+            const result = await usersCollection.find().toArray()
+            res.send(result)
+        })
         
     
     } catch (err) {
