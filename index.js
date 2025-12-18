@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const admin = require('firebase-admin');
 
 const serviceAccount = require('./admin.json');
-
+const stripe = require('stripe')(`${process.env.STRIPE_SECRET}`);
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -43,6 +43,17 @@ async function verifyFirebaseToken(req, res, next) {
         res.status(401).send({ message: 'Unauthorized Access: Invalid Firebase ID Token.' });
     }
 }
+async function verifyAdmin(req, res, next) {
+    const email = req.user.email;
+    const user = await usersCollection.findOne({ email });
+
+    if (!user || user.role !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden access' });
+    }
+
+    next();
+}
+
 
 
 const uri = process.env.DATABASE_URL;
@@ -69,6 +80,67 @@ async function run() {
         app.get('/', (req, res) => {
             res.send('PIIRS Server is running!');
         });
+
+        app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
+            const { price } = req.body;
+
+            const session = await stripe.checkout.sessions.create({
+                payment_method_types: ['card'],
+                mode: 'payment',
+                line_items: [
+                    {
+                        price_data: {
+                            currency: 'bdt',
+                            product_data: {
+                                name: 'Premium Membership',
+                            },
+                            unit_amount: price * 100,
+                        },
+                        quantity: 1,
+                    },
+                ],
+                success_url: 'http://localhost:5173/dashboard/payment-success',
+                cancel_url: 'http://localhost:5173/dashboard/payment-cancel',
+                customer_email: req.user.email,
+            });
+
+            res.send({ url: session.url });
+        });
+
+
+
+
+        app.patch('/users/premium/:email', verifyFirebaseToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await usersCollection.updateOne(
+                { email: email },
+                { $set: { userStatus: 'premium' } }
+            );
+            res.send(result);
+        });
+        app.post('/admin/create-staff', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    const { name, email, password, photo, phone } = req.body;
+
+    const firebaseUser = await admin.auth().createUser({
+        email,
+        password,
+        displayName: name,
+        photoURL: photo
+    });
+
+    const staffUser = {
+        name,
+        email,
+        photo,
+        role: 'staff',
+        userStatus: 'active',
+        createdAt: new Date()
+    };
+
+    const result = await usersCollection.insertOne(staffUser);
+
+    res.send({ success: true, result });
+});
 
         app.post('/users', async (req, res) => {
             const userdata = req.body
@@ -112,7 +184,7 @@ async function run() {
             try {
                 const result = await usersCollection.updateOne(query, updateDoc);
 
-                
+
 
                 res.send(result);
             } catch (error) {
