@@ -4,6 +4,8 @@ const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
+const { ObjectId } = require('mongodb');
+
 const admin = require('firebase-admin');
 
 const serviceAccount = require('./admin.json');
@@ -43,16 +45,7 @@ async function verifyFirebaseToken(req, res, next) {
         res.status(401).send({ message: 'Unauthorized Access: Invalid Firebase ID Token.' });
     }
 }
-async function verifyAdmin(req, res, next) {
-    const email = req.user.email;
-    const user = await usersCollection.findOne({ email });
 
-    if (!user || user.role !== 'admin') {
-        return res.status(403).send({ message: 'Forbidden access' });
-    }
-
-    next();
-}
 
 
 
@@ -80,7 +73,16 @@ async function run() {
         app.get('/', (req, res) => {
             res.send('PIIRS Server is running!');
         });
+        async function verifyAdmin(req, res, next) {
+            const email = req.user.email;
+            const user = await usersCollection.findOne({ email });
 
+            if (!user || user.role !== 'admin') {
+                return res.status(403).send({ message: 'Forbidden access' });
+            }
+
+            next();
+        }
         app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
             const { price } = req.body;
 
@@ -119,28 +121,28 @@ async function run() {
             res.send(result);
         });
         app.post('/admin/create-staff', verifyFirebaseToken, verifyAdmin, async (req, res) => {
-    const { name, email, password, photo, phone } = req.body;
+            const { name, email, password, photo, } = req.body;
 
-    const firebaseUser = await admin.auth().createUser({
-        email,
-        password,
-        displayName: name,
-        photoURL: photo
-    });
+            const firebaseUser = await admin.auth().createUser({
+                email,
+                password,
+                displayName: name,
+                photoURL: photo
+            });
 
-    const staffUser = {
-        name,
-        email,
-        photo,
-        role: 'staff',
-        userStatus: 'active',
-        createdAt: new Date()
-    };
+            const staffUser = {
+                name,
+                email,
+                photo,
+                role: 'staff',
+                userStatus: 'active',
+                createdAt: new Date()
+            };
 
-    const result = await usersCollection.insertOne(staffUser);
+            const result = await usersCollection.insertOne(staffUser);
 
-    res.send({ success: true, result });
-});
+            res.send({ success: true, result });
+        });
 
         app.post('/users', async (req, res) => {
             const userdata = req.body
@@ -191,6 +193,43 @@ async function run() {
                 res.status(500).send({ message: "Error updating post count", error });
             }
         });
+        app.delete('/issues/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+            const { id } = req.params;
+            try {
+                const result = await issuesCollection.deleteOne({ _id: new ObjectId(id) });
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({ message: 'Issue not found' });
+                }
+                res.send({ success: true, message: `Issue ${id} deleted` });
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete issue' });
+            }
+        });
+
+        app.patch('/assign/:staffEmail/:problemId', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+            const { staffEmail, problemId } = req.params;
+
+            try {
+                const result = await issuesCollection.updateOne(
+                    { _id: new ObjectId(problemId) },
+                    {
+                        $set: {
+                            assigned_to: staffEmail,
+                            status: 'assigned'
+                        }
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ message: 'Issue not found' });
+                }
+
+                res.send({ success: true, message: `Staff ${staffEmail} assigned to issue ${problemId}` });
+            } catch (error) {
+                console.error("Error assigning staff:", error);
+                res.status(500).send({ message: 'Failed to assign staff to the issue.' });
+            }
+        });
 
         app.get('/secret', verifyFirebaseToken, (req, res) => {
             res.send({
@@ -198,7 +237,26 @@ async function run() {
                 userEmail: req.user.email
             });
         });
+        app.get('/issues', verifyFirebaseToken, async (req, res) => {
+            try {
+                const issues = await issuesCollection.find().toArray();
+                res.send(issues);
+            } catch (error) {
+                console.error("Error fetching issues:", error);
+                res.status(500).send({ message: 'Failed to fetch issues.' });
+            }
+        });
+        app.get('/staff', verifyFirebaseToken, async (req, res) => {
 
+            const query = { role: 'staff' }
+            try {
+                const staff = await usersCollection.find(query).toArray();
+                res.send(staff);
+            } catch (error) {
+                console.error("Error fetching staff:", error);
+                res.status(500).send({ message: 'Failed to fetch staff.' });
+            }
+        });
         app.post('/issues', verifyFirebaseToken, async (req, res) => {
             const issueData = req.body;
 
@@ -227,9 +285,15 @@ async function run() {
 
 
 
+
+
+
+
     } catch (err) {
         console.error("Failed to connect to MongoDB or run server logic:", err);
     }
+
+
 }
 run();
 
@@ -243,3 +307,4 @@ process.on('SIGINT', async () => {
     console.log('MongoDB connection closed.');
     process.exit(0);
 });
+
