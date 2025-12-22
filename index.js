@@ -7,16 +7,19 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
 const { ObjectId } = require('mongodb');
 
-const admin = require('firebase-admin');
+// const admin = require("./admin.json");
 
-const serviceAccount = require('./admin.json');
+// const serviceAccount = require('./admin.json');
 const stripe = require('stripe')(`${process.env.STRIPE_SECRET}`);
 const app = express();
 const port = process.env.PORT || 3000;
+const admin = require("firebase-admin");
+const serviceAccount = require("./admin.json");
 
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
+
 
 app.use(cors({
     origin: ['http://localhost:5173'],
@@ -92,6 +95,61 @@ async function run() {
 
             next();
         }
+
+        app.patch(
+  '/admin/update-staff/:email',
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    const { email } = req.params;
+    const { name, photo, phone } = req.body;
+
+    try {
+      // 🔹 Step 1: Get Firebase user by email
+      const userRecord = await admin.auth().getUserByEmail(email);
+
+      // 🔹 Step 2: Update Firebase Auth user
+      await admin.auth().updateUser(userRecord.uid, {
+        displayName: name,
+        photoURL: photo,
+      });
+
+      // 🔹 Step 3: Update MongoDB user document
+      const result = await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            name,
+            photo,
+            phone,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      res.send({ success: true, result });
+    } catch (error) {
+      console.error('Update staff failed:', error);
+      res.status(500).send({ message: 'Failed to update staff' });
+    }
+  }
+);
+
+app.delete(
+  '/admin/delete-staff/:email',
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    const { email } = req.params;
+
+    const userRecord = await admin.auth().getUserByEmail(email);
+    await admin.auth().deleteUser(userRecord.uid);
+    await usersCollection.deleteOne({ email });
+
+    res.send({ success: true });
+  }
+);
+
         app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
             const { price, purpose } = req.body; // purpose: 'premium' or 'boost'
 
@@ -142,19 +200,22 @@ async function run() {
             res.send(result);
         });
         app.post('/admin/create-staff', verifyFirebaseToken, verifyAdmin, async (req, res) => {
-            const { name, email, password, photo, } = req.body;
+            const { name, email, password, photo,phone } = req.body;
 
             const firebaseUser = await admin.auth().createUser({
                 email,
                 password,
+                
                 displayName: name,
-                photoURL: photo
+                photoURL: photo,
+                phone:phone
             });
 
             const staffUser = {
                 name,
                 email,
                 photo,
+                phone,
                 role: 'staff',
                 userStatus: 'active',
                 createdAt: new Date()
