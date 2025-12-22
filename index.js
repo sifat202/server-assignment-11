@@ -13,7 +13,7 @@ const { ObjectId } = require('mongodb');
 const stripe = require('stripe')(`${process.env.STRIPE_SECRET}`);
 const app = express();
 const port = process.env.PORT || 3000;
-const admin = require("firebase-admin");
+const admin = require("firebase-admin");    
 const serviceAccount = require("./admin.json");
 
 admin.initializeApp({
@@ -22,7 +22,7 @@ admin.initializeApp({
 
 
 app.use(cors({
-    origin: ['http://localhost:5173'],
+    origin: ['https://assignment-11-e1bd5.web.app'],
     credentials: true,
 }));
 
@@ -53,7 +53,7 @@ async function verifyFirebaseToken(req, res, next) {
 
 
 
-const uri = process.env.DATABASE_URL;
+const uri = `${process.env.database_url}`;
 
 const client = new MongoClient(uri, {
     serverApi: {
@@ -167,8 +167,8 @@ app.delete(
                             quantity: 1,
                         },
                     ],
-                    success_url: 'http://localhost:5173/dashboard/payment-success',
-                    cancel_url: 'http://localhost:5173/dashboard/payment-cancel',
+                    success_url: 'https://assignment-11-e1bd5.web.app/dashboard/payment-success',
+                    cancel_url: 'https://assignment-11-e1bd5.web.app/dashboard/payment-cancel',
                     customer_email: req.user.email,
                 });
 
@@ -275,17 +275,27 @@ app.delete(
                 res.status(500).send({ message: "Error updating post count", error });
             }
         });
-        app.patch('/issues/status/:id', verifyFirebaseToken, verifyStaff, async (req, res) => {
-            const id = req.params.id;
-            const { status } = req.body;
+       app.patch('/issues/status/:id', verifyFirebaseToken, verifyStaff, async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
 
-            const result = await issuesCollection.updateOne(
-                { _id: new ObjectId(id) },
-                { $set: { status } }
-            );
+    const logEntry = {
+        status: status,
+        changedBy: req.user.email,
+        changedAt: new Date()
+    };
 
-            res.send(result);
-        });
+    const result = await issuesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+            $set: { status },
+            $push: { statproglog: logEntry }
+        }
+    );
+
+    res.send(result);
+});
+
         app.get('/my-issues/:email', async (req, res) => {
             const { email } = req.params;
             const result = await issuesCollection
@@ -352,7 +362,8 @@ app.delete(
                     {
                         $set: {
                             assigned_to: staffEmail,
-                            status: 'assigned'
+                            assignedat :new Date(),
+                            
                         }
                     }
                 );
