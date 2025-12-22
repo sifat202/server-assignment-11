@@ -67,7 +67,7 @@ async function run() {
 
         const issuesCollection = db.collection("issues");
         const usersCollection = db.collection("users");
-
+const paymentsCollection = db.collection("payments");
         console.log("MongoDB connected successfully. Collections ready.");
 
         app.get('/', (req, res) => {
@@ -83,31 +83,53 @@ async function run() {
 
             next();
         }
-        app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
-            const { price } = req.body;
+        async function verifyStaff(req, res, next) {
+    const email = req.user.email;
+    const user = await usersCollection.findOne({ email });
 
-            const session = await stripe.checkout.sessions.create({
-                payment_method_types: ['card'],
-                mode: 'payment',
-                line_items: [
-                    {
-                        price_data: {
-                            currency: 'bdt',
-                            product_data: {
-                                name: 'Premium Membership',
-                            },
-                            unit_amount: price * 100,
-                        },
-                        quantity: 1,
+    if (!user || user.role !== "staff") {
+        return res.status(403).send({ message: 'Forbidden access: Staff only' });
+    }
+
+    next();
+}
+    app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
+    const { price, purpose } = req.body; // purpose: 'premium' or 'boost'
+
+    try {
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            mode: 'payment',
+            line_items: [
+                {
+                    price_data: {
+                        currency: 'bdt',
+                        product_data: { name: purpose === 'boost' ? 'Issue Boost' : 'Premium Membership' },
+                        unit_amount: price * 100,
                     },
-                ],
-                success_url: 'http://localhost:5173/dashboard/payment-success',
-                cancel_url: 'http://localhost:5173/dashboard/payment-cancel',
-                customer_email: req.user.email,
-            });
-
-            res.send({ url: session.url });
+                    quantity: 1,
+                },
+            ],
+            success_url: 'http://localhost:5173/dashboard/payment-success',
+            cancel_url: 'http://localhost:5173/dashboard/payment-cancel',
+            customer_email: req.user.email,
         });
+
+        // Record the payment as "pending" immediately
+        await paymentsCollection.insertOne({
+            userEmail: req.user.email,
+            amount: price,
+            purpose: purpose || 'premium',
+            status: 'pending',
+            createdAt: new Date(),
+        });
+
+        res.send({ url: session.url });
+    } catch (error) {
+        console.error("Error creating checkout session:", error);
+        res.status(500).send({ message: 'Failed to create checkout session' });
+    }
+});
 
 
 
@@ -193,6 +215,42 @@ async function run() {
                 res.status(500).send({ message: "Error updating post count", error });
             }
         });
+        app.patch('/issues/status/:id',verifyFirebaseToken,verifyStaff, async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
+
+    const result = await issuesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } }
+    );
+
+    res.send(result);
+});
+app.get('/my-issues/:email', async (req, res) => {
+    const { email } = req.params;
+    const result = await issuesCollection
+        .find({ reporterEmail: email })
+        .toArray();
+    res.send(result);
+});
+app.patch('/issues/:id', verifyFirebaseToken, async (req, res) => {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const result = await issuesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+            $set: {
+                ...updateData,
+                updatedAt: new Date()
+            }
+        }
+    );
+
+    res.send(result);
+});
+
+
         app.delete('/issues/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const { id } = req.params;
             try {
@@ -205,6 +263,25 @@ async function run() {
                 res.status(500).send({ message: 'Failed to delete issue' });
             }
         });
+        app.get('/issues/:id', verifyFirebaseToken, async (req, res) => {
+    const { id } = req.params;
+
+    const issue = await issuesCollection.findOne({
+        _id: new ObjectId(id)
+    });
+
+    res.send(issue);
+});
+
+       app.patch('/issues/reject/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+    const result = await issuesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'rejected' } }
+    );
+    res.send(result);
+});
+
 
         app.patch('/assign/:staffEmail/:problemId', verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const { staffEmail, problemId } = req.params;
@@ -230,6 +307,26 @@ async function run() {
                 res.status(500).send({ message: 'Failed to assign staff to the issue.' });
             }
         });
+        app.patch('/issues/upvote/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const result = await issuesCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $inc: { upvotes: 1 } } 
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({ message: 'Issue not found' });
+        }
+
+        res.send({ success: true, message: 'Upvoted successfully' });
+    } catch (error) {
+        console.error("Error upvoting issue:", error);
+        res.status(500).send({ message: 'Failed to upvote the issue' });
+    }
+});
+
 
         app.get('/secret', verifyFirebaseToken, (req, res) => {
             res.send({
@@ -257,6 +354,38 @@ async function run() {
                 res.status(500).send({ message: 'Failed to fetch staff.' });
             }
         });
+        app.patch('/issues/promote/:id',verifyFirebaseToken, async (req, res) => {
+    const { id } = req.params;
+
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!issue) {
+        return res.status(404).send({ message: 'Issue not found' });
+    }
+
+    if (issue.isPromoted === true) {
+        return res.send({ message: 'Already promoted' });
+    }
+
+    const result = await issuesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+            $set: { isPromoted: true },
+            $inc: { priority: 1} // ✅ THIS ADDS +1 TO EXISTING NUMBER
+        }
+    );
+
+    res.send({ success: true });
+});
+app.get('/payments', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    try {
+        const payments = await paymentsCollection.find().sort({ createdAt: -1 }).toArray();
+        res.send(payments);
+    } catch (error) {
+        console.error("Error fetching payments:", error);
+        res.status(500).send({ message: 'Failed to fetch payments' });
+    }
+});
         app.post('/issues', verifyFirebaseToken, async (req, res) => {
             const issueData = req.body;
 
